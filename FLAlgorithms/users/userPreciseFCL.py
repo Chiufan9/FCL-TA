@@ -11,6 +11,47 @@ from utils.meter import Meter
 
 eps = 1e-30
 
+def get_params(model, no_grad_name_list=None):
+    param_dict = {}
+    for param_name in model.state_dict():
+        if no_grad_name_list is None:
+            param_dict[param_name] = model.state_dict()[param_name].cpu().numpy()
+        elif len(no_grad_name_list) == 0:
+            break
+        elif len(no_grad_name_list) > 0 and param_name in no_grad_name_list:
+            param_dict[param_name] = model.state_dict()[param_name].cpu().numpy()
+
+    return param_dict
+
+
+def LTC(theta_t1, theta_m_t1, theta_m_t2, eps=1e-2):
+
+    theta_tilde_t1 = {}
+    for param_name in theta_t1:
+
+        if (
+                'bn' in param_name.lower()
+                or 'batchnorm' in param_name.lower()
+                or 'running_mean' in param_name
+                or 'running_var' in param_name
+                or 'num_batches_tracked' in param_name
+        ):
+            theta_tilde_t1[param_name] = torch.from_numpy(
+                theta_m_t1[param_name].copy()
+            ).to(torch.float32)
+            continue
+
+        m = theta_t1[param_name].astype(np.double) - theta_m_t1[param_name].astype(np.double)
+        h = theta_m_t1[param_name].astype(np.double) - theta_m_t2[param_name].astype(np.double)
+
+        u = qp_solver(m, h, eps=eps)
+        
+        new_param = m + u * h + theta_m_t1[param_name]
+        theta_tilde_t1[param_name] = torch.from_numpy(new_param).to(torch.float32)
+
+    return theta_tilde_t1
+
+
 class UserPreciseFCL(User):
     def __init__(self,
                  args,
@@ -31,6 +72,12 @@ class UserPreciseFCL(User):
         self.k_loss_flow = args.k_loss_flow
         self.classifier_head_list = classifier_head_list
         self.use_lastflow_x = args.use_lastflow_x
+        self.using_LTC = args.using_LTC
+
+        self.theta_t1 = None
+        self.theta_m_t1 = None
+        self.theta_m_t2 = None
+
         
 
     def next_task(self, train, test, label_info = None, if_label = True):
@@ -90,6 +137,15 @@ class UserPreciseFCL(User):
         # device
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
+        # when task transfers, execute LTC
+        if self.using_LTC:
+            if glob_iter >= 20 and glob_iter % 10 == 0:
+                self.theta_t1 = get_params(global_classifier)
+                new_model_dict = LTC(self.theta_t1, self.theta_m_t1, self.theta_m_t2)
+                self.model.classifier.load_state_dict(new_model_dict)
+                # del new_model_dict
+                self.theta_m_t2 = copy.deepcopy(self.theta_m_t1)
+
         correct = 0
         sample_num = 0
         cls_meter = Meter()
@@ -148,6 +204,12 @@ class UserPreciseFCL(User):
             result_dict['flow_loss'] = 0
         if 'flow_loss_last' not in result_dict.keys():
             result_dict['flow_loss_last'] = 0
+
+        if glob_iter == 9:
+            self.theta_m_t2 = get_params(self.model.classifier)
+
+        if glob_iter % 10 == 9:
+            self.theta_m_t1 = get_params(self.model.classifier)
 
         if verbose:
             logger.info(("Training for user {:d}; Acc: {:.2f} %%; c_loss: {:.4f}; kd_loss: {:.4f}; flow_prob_mean: {:.4f}; "

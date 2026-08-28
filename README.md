@@ -1,5 +1,5 @@
-# Accurate Forgetting for Heterogeneous Federated Continual Learning
-The implementation of AF-FCL.
+# FCL‑TA: Optimization Trajectory Alignment for Federated Continual Learning to Mitigate Spatial‑Temporal Trajectory Misalignment
+The implementation of FCL‑TA.
 
 ## Requirements
 The needed libraries are in requirements.txt.
@@ -8,6 +8,4 @@ The needed libraries are in requirements.txt.
 All datasets can be automatically downloaded with ```torchvision.datasets```
 
 ## Reference
-The code structure is based on the code in [FedCIL](https://github.com/daiqing98/FedCIL).
-
-The normalizaing flow code refers to [nflows](https://github.com/bayesiains/nflows).
+The code structure is based on the code in [AF-FCL](https://github.com/zaocan666/AF-FCL)

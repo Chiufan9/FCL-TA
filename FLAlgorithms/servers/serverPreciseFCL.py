@@ -9,6 +9,36 @@ from FLAlgorithms.PreciseFCLNet.model import PreciseModel
 from utils.dataset import get_dataset
 from utils.model_utils import read_user_data_PreciseFCL
 from utils.utils import str_in_list
+from FLAlgorithms.users.userPreciseFCL import qp_solver, get_params
+
+
+def GTR(theta_bar_t, theta_t1, theta_t2, eps=1e-2):
+
+    new_theta_t = {}
+    for param_name in theta_bar_t:
+
+        if (
+                'bn' in param_name.lower()
+                or 'batchnorm' in param_name.lower()
+                or 'running_mean' in param_name
+                or 'running_var' in param_name
+                or 'num_batches_tracked' in param_name
+        ):
+            new_theta_t[param_name] = torch.from_numpy(
+                theta_bar_t[param_name].copy()
+            ).to(torch.float32)
+            continue
+
+        h = theta_t1[param_name].astype(np.double) - theta_t2[param_name].astype(np.double)
+        m = theta_bar_t[param_name].astype(np.double) - theta_t1[param_name].astype(np.double)
+
+        u = qp_solver(m, h, eps=eps)
+
+        new_param = m + u * h + theta_t1[param_name]
+        # 转换为 torch.Tensor，并保证数据类型为 float32
+        new_theta_t[param_name] = torch.from_numpy(new_param).to(torch.float32)
+    return new_theta_t
+
 
 class FedPrecise(Server):
     def __init__(self, args, model:PreciseModel, seed):
@@ -19,6 +49,10 @@ class FedPrecise(Server):
         self.data = get_dataset(args, args.dataset, args.datadir, args.data_split_file)
         self.unique_labels = self.data['unique_labels']
         self.classifier_head_list = ['classifier.fc_classifier', 'classifier.fc2']
+        self.theta_t1 = None
+        self.theta_t2 = None
+        self.theta_bar_t = None
+        self.using_GTR = args.using_GTR
         self.init_users(self.data, args, model)
 
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -189,6 +223,21 @@ class FedPrecise(Server):
 
                 if self.algorithm != 'local':
                     self.aggregate_parameters_(class_partial=False)
+
+                if glob_iter == 9:
+                    self.theta_t2 = get_params(global_classifier)
+
+                if glob_iter == 19:
+                    self.theta_t1 = get_params(global_classifier)
+
+                if self.using_GTR:
+                    if task >= 2 and glob_iter % 10 == 9:
+                        self.theta_bar_t = get_params(self.model.classifier)
+                        new_model_dict = GTR(self.theta_bar_t, self.theta_t1, self.theta_t2)
+                        self.model.classifier.load_state_dict(new_model_dict)
+                        # del new_model_dict
+                        self.theta_t2 = copy.deepcopy(self.theta_t1)
+                        self.theta_t1 = get_params(self.model.classifier)
                     
                 curr_timestamp=time.time()  # log  server-agg end time
                 agg_time = curr_timestamp - self.timestamp

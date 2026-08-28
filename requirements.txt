@@ -6,3 +6,5 @@ tqdm
 h5py
 sklearn
 seaborn
+glog
+quadprog
